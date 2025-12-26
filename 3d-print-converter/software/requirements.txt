@@ -1,0 +1,54 @@
+# CAD-to-3D Print Converter Requirements
+# All open-source libraries
+
+# Core dependencies
+numpy>=1.24.0
+scipy>=1.10.0
+
+# DXF/DWG handling
+ezdxf>=1.0.0
+
+# 3D mesh operations
+trimesh>=4.0.0
+numpy-stl>=3.0.0
+pymeshlab>=2023.12
+
+# SVG handling (for PDF conversion)
+svgpathtools>=1.5.0
+svg.path>=6.0
+
+# Image processing
+Pillow>=10.0.0
+opencv-python>=4.8.0
+
+# Web interface
+flask>=3.0.0
+flask-cors>=4.0.0
+flask-socketio>=5.3.0
+werkzeug>=3.0.0
+
+# G-code generation
+gcodeparser>=0.2.0
+
+# Async operations
+celery>=5.3.0
+redis>=5.0.0
+
+# API
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.6
+
+# Utilities
+python-magic>=0.4.27
+watchdog>=3.0.0
+pyyaml>=6.0.0
+click>=8.1.0
+rich>=13.0.0
+tqdm>=4.66.0
+
+# FreeCAD Python bindings (install separately)
+# pip install --no-build-isolation freecad-feedstock
+
+# Optional: OpenSCAD Python bindings
+# pip install solidpython2
