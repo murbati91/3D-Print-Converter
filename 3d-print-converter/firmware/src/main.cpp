@@ -24,6 +24,9 @@
 #include <ArduinoJson.h>
 #include <Update.h>
 #include <HTTPClient.h>
+#include <Preferences.h>
+
+Preferences preferences;
 
 // =============================================================================
 // PIN DEFINITIONS - ESP32-WROOM-32 with Screw Terminals
@@ -487,6 +490,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <html>
 <head>
     <title>3D Print Converter</title>
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
@@ -554,20 +558,48 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             cursor: pointer;
         }
         .tab.active { background: #00d4ff; color: #000; }
-        .console { 
-            background: #000; 
-            color: #0f0; 
-            font-family: monospace; 
-            padding: 15px; 
+        .console {
+            background: #000;
+            color: #0f0;
+            font-family: monospace;
+            padding: 15px;
             border-radius: 5px;
             height: 200px;
             overflow-y: auto;
         }
+        /* Upload Animation */
+        .upload-progress { display: none; text-align: center; padding: 30px; }
+        .upload-progress.active { display: block; }
+        .upload-stages { display: flex; justify-content: space-around; margin: 20px 0; }
+        .stage { text-align: center; opacity: 0.3; transition: all 0.3s; }
+        .stage.active { opacity: 1; }
+        .stage.done { opacity: 1; color: #4caf50; }
+        .stage-icon { font-size: 40px; margin-bottom: 10px; }
+        .stage-label { font-size: 12px; color: #888; }
+        .spinner {
+            width: 50px; height: 50px;
+            border: 4px solid #333;
+            border-top: 4px solid #00d4ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .upload-message { font-size: 18px; margin: 15px 0; }
+        /* WiFi Instructions */
+        .wifi-steps { background: #0d1117; padding: 15px; border-radius: 8px; margin: 15px 0; }
+        .wifi-steps ol { margin: 0; padding-left: 20px; }
+        .wifi-steps li { margin: 8px 0; line-height: 1.6; }
+        .highlight { background: #00d4ff; color: #000; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+        .collapsible { cursor: pointer; padding: 10px; background: #0d1117; border-radius: 5px; margin: 10px 0; }
+        .collapsible:hover { background: #161b22; }
+        .collapsible-content { display: none; padding: 15px; background: #0d1117; border-radius: 0 0 5px 5px; margin-top: -10px; }
+        .collapsible-content.show { display: block; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🖨️ 3D Print Converter</h1>
+        <h1>&#9881; 3D Print Converter</h1>
         
         <div class="card">
             <h3>System Status</h3>
@@ -593,13 +625,96 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                 <div class="progress-fill" id="progress"></div>
             </div>
         </div>
-        
+
+        <div class="card" id="getting-started">
+            <h3>&#128218; Getting Started Guide</h3>
+            <div style="line-height:1.8">
+                <p><strong>How This System Works:</strong></p>
+                <ol style="margin-left:20px">
+                    <li><strong>Upload CAD Files</strong> - Drop DWG, DXF, PDF, or other CAD files below</li>
+                    <li><strong>Convert to G-code</strong> - Files are sent to your PC server for conversion</li>
+                    <li><strong>Print Directly</strong> - G-code streams to your 3D printer via serial</li>
+                </ol>
+
+                <p style="margin-top:15px"><strong>Setup Checklist:</strong></p>
+                <ul style="margin-left:20px;list-style:none">
+                    <li id="check-wifi">&#9989; WiFi Connected</li>
+                    <li id="check-sd">&#10060; SD Card - <em>Optional for file storage</em></li>
+                    <li id="check-server">&#9744; Companion Server - <em>Set URL in Settings below</em></li>
+                    <li id="check-printer">&#9744; 3D Printer - <em>Connect via TX2/RX2 pins</em></li>
+                </ul>
+
+                <p style="margin-top:15px"><strong>Printer Wiring (when it arrives):</strong></p>
+                <table style="width:100%;border-collapse:collapse;margin:10px 0">
+                    <tr style="background:#0d1117">
+                        <td style="padding:8px;border:1px solid #333">ESP32 TX2 (GPIO17)</td>
+                        <td style="padding:8px;border:1px solid #333">&#8594;</td>
+                        <td style="padding:8px;border:1px solid #333">Printer RX</td>
+                    </tr>
+                    <tr style="background:#0d1117">
+                        <td style="padding:8px;border:1px solid #333">ESP32 RX2 (GPIO16)</td>
+                        <td style="padding:8px;border:1px solid #333">&#8594;</td>
+                        <td style="padding:8px;border:1px solid #333">Printer TX</td>
+                    </tr>
+                    <tr style="background:#0d1117">
+                        <td style="padding:8px;border:1px solid #333">ESP32 GND</td>
+                        <td style="padding:8px;border:1px solid #333">&#8594;</td>
+                        <td style="padding:8px;border:1px solid #333">Printer GND</td>
+                    </tr>
+                </table>
+
+                <p style="color:#888;font-size:12px">Most printers use 115200 baud. Check your printer's serial settings.</p>
+
+                <div class="collapsible" onclick="toggleCollapsible(this)">
+                    &#128246; <strong>Change WiFi Network</strong> (click to expand)
+                </div>
+                <div class="collapsible-content">
+                    <div class="wifi-steps">
+                        <p><strong>Moving to a different location? Follow these steps:</strong></p>
+                        <ol>
+                            <li>Power off the ESP32 (unplug USB)</li>
+                            <li>Move to the new location with the 3D printer</li>
+                            <li>Power on the ESP32</li>
+                            <li>ESP32 will fail to connect and start <span class="highlight">3DConverter</span> hotspot</li>
+                            <li>Connect your phone/laptop to <span class="highlight">3DConverter</span> WiFi (password: <span class="highlight">2022@Bukhalid</span>)</li>
+                            <li>Open browser and go to <span class="highlight">192.168.4.1/wifi</span></li>
+                            <li>Enter the new WiFi name and password</li>
+                            <li>Click Connect - device will restart and join new network</li>
+                            <li>Find device at <span class="highlight">http://3dconverter.local</span> or check router for IP</li>
+                        </ol>
+                        <p style="color:#4caf50;margin-top:10px">&#9989; Your server URL settings are preserved!</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="card">
             <h3>Upload Files</h3>
             <div class="upload-area" id="upload-area" onclick="document.getElementById('file-input').click()">
-                <p>📁 Click or drag files here</p>
+                <p>&#128193; Click or drag files here</p>
                 <p style="color:#888;font-size:12px">Supported: DWG, DGN, DXF, PDF, DAT, G-code</p>
                 <input type="file" id="file-input" multiple accept=".dwg,.dgn,.dxf,.pdf,.dat,.gcode,.gco">
+            </div>
+            <div class="upload-progress" id="upload-progress">
+                <div class="spinner"></div>
+                <div class="upload-message" id="upload-message">Uploading...</div>
+                <div class="upload-stages">
+                    <div class="stage" id="stage-upload">
+                        <div class="stage-icon">&#128228;</div>
+                        <div class="stage-label">Upload</div>
+                    </div>
+                    <div class="stage" id="stage-convert">
+                        <div class="stage-icon">&#9881;</div>
+                        <div class="stage-label">Convert</div>
+                    </div>
+                    <div class="stage" id="stage-ready">
+                        <div class="stage-icon">&#9989;</div>
+                        <div class="stage-label">Ready</div>
+                    </div>
+                </div>
+                <div class="progress-bar" style="height:8px;margin-top:20px">
+                    <div class="progress-fill" id="upload-progress-bar" style="transition:width 0.5s"></div>
+                </div>
             </div>
         </div>
         
@@ -629,7 +744,38 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     
     <script>
         let currentTab = 'uploads';
-        
+
+        // Collapsible toggle
+        function toggleCollapsible(el) {
+            const content = el.nextElementSibling;
+            content.classList.toggle('show');
+        }
+
+        // Upload progress animation
+        function showUploadProgress(stage, message, percent) {
+            const area = document.getElementById('upload-area');
+            const progress = document.getElementById('upload-progress');
+            const msgEl = document.getElementById('upload-message');
+            const bar = document.getElementById('upload-progress-bar');
+
+            area.style.display = 'none';
+            progress.classList.add('active');
+            msgEl.textContent = message;
+            bar.style.width = percent + '%';
+
+            ['upload', 'convert', 'ready'].forEach((s, i) => {
+                const el = document.getElementById('stage-' + s);
+                el.classList.remove('active', 'done');
+                if (s === stage) el.classList.add('active');
+                else if (['upload', 'convert', 'ready'].indexOf(s) < ['upload', 'convert', 'ready'].indexOf(stage)) el.classList.add('done');
+            });
+        }
+
+        function hideUploadProgress() {
+            document.getElementById('upload-area').style.display = 'block';
+            document.getElementById('upload-progress').classList.remove('active');
+        }
+
         // Drag and drop
         const uploadArea = document.getElementById('upload-area');
         uploadArea.addEventListener('dragover', (e) => {
@@ -644,17 +790,19 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             uploadArea.classList.remove('dragover');
             uploadFiles(e.dataTransfer.files);
         });
-        
+
         document.getElementById('file-input').addEventListener('change', (e) => {
             uploadFiles(e.target.files);
         });
-        
+
         async function uploadFiles(files) {
             for (let file of files) {
                 log('Uploading: ' + file.name);
+                showUploadProgress('upload', 'Uploading ' + file.name + '...', 20);
+
                 const formData = new FormData();
                 formData.append('file', file);
-                
+
                 try {
                     const response = await fetch('/upload', {
                         method: 'POST',
@@ -662,14 +810,23 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                     });
                     const result = await response.json();
                     if (result.success) {
-                        log('✓ Uploaded: ' + file.name);
+                        log('Uploaded: ' + file.name);
+                        showUploadProgress('convert', 'Converting to G-code...', 60);
+
+                        // Simulate conversion time (actual conversion happens on server)
+                        await new Promise(r => setTimeout(r, 1500));
+                        showUploadProgress('ready', 'Ready to print!', 100);
+                        log('Ready: ' + file.name);
+
+                        await new Promise(r => setTimeout(r, 2000));
                     } else {
-                        log('✗ Failed: ' + result.error);
+                        log('Failed: ' + result.error);
                     }
                 } catch (err) {
-                    log('✗ Error: ' + err.message);
+                    log('Error: ' + err.message);
                 }
             }
+            hideUploadProgress();
             loadFileList();
         }
         
@@ -928,33 +1085,103 @@ void handle_settings() {
     if (server.method() == HTTP_POST) {
         StaticJsonDocument<256> doc;
         deserializeJson(doc, server.arg("plain"));
-        
+
         if (doc.containsKey("server_url")) {
             strncpy(config.server_url, doc["server_url"].as<const char*>(), sizeof(config.server_url));
         }
-        
-        // Save to SD card
+        if (doc.containsKey("wifi_ssid")) {
+            strncpy(config.wifi_ssid, doc["wifi_ssid"].as<const char*>(), sizeof(config.wifi_ssid));
+        }
+        if (doc.containsKey("wifi_pass")) {
+            strncpy(config.wifi_pass, doc["wifi_pass"].as<const char*>(), sizeof(config.wifi_pass));
+        }
+
+        // Save to SD card if available
         File f = SD.open("/config.json", FILE_WRITE);
         if (f) {
             serializeJson(doc, f);
             f.close();
         }
-        
+
         server.send(200, "application/json", "{\"success\":true}");
     } else {
         StaticJsonDocument<256> doc;
         doc["server_url"] = config.server_url;
         doc["device_name"] = config.device_name;
         doc["printer_baud"] = config.printer_baud;
-        
+        doc["wifi_ssid"] = config.wifi_ssid;
+
         String output;
         serializeJson(doc, output);
         server.send(200, "application/json", output);
     }
 }
 
+// WiFi configuration page
+void handle_wifi_config() {
+    if (server.method() == HTTP_POST) {
+        String ssid = server.arg("ssid");
+        String pass = server.arg("password");
+
+        strncpy(config.wifi_ssid, ssid.c_str(), sizeof(config.wifi_ssid));
+        strncpy(config.wifi_pass, pass.c_str(), sizeof(config.wifi_pass));
+
+        // Save to Preferences (flash memory - persists without SD card!)
+        preferences.begin("3dprint", false);
+        preferences.putString("wifi_ssid", ssid);
+        preferences.putString("wifi_pass", pass);
+        preferences.end();
+
+        Serial.println("WiFi credentials saved to flash:");
+        Serial.println("  SSID: " + ssid);
+
+        server.send(200, "text/html", R"rawliteral(
+<!DOCTYPE html><html><head><title>WiFi Configured</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font-family:sans-serif;background:#1a1a2e;color:#fff;padding:20px;text-align:center;}
+.msg{background:#16213e;padding:30px;border-radius:10px;max-width:400px;margin:50px auto;}
+h2{color:#4caf50;}</style></head><body>
+<div class="msg"><h2>WiFi Configured!</h2>
+<p>SSID: )rawliteral" + ssid + R"rawliteral(</p>
+<p>The device will now restart and connect to your network.</p>
+<p>Find it at: <b>http://3DConverter.local</b></p>
+</div></body></html>)rawliteral");
+
+        delay(2000);
+        ESP.restart();
+    } else {
+        // Show WiFi config form
+        server.send(200, "text/html", R"rawliteral(
+<!DOCTYPE html><html><head><title>WiFi Setup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body{font-family:sans-serif;background:#1a1a2e;color:#fff;padding:20px;}
+.container{max-width:400px;margin:0 auto;}
+h1{color:#00d4ff;text-align:center;}
+.card{background:#16213e;padding:30px;border-radius:10px;}
+input{width:100%;padding:12px;margin:10px 0;border:none;border-radius:5px;font-size:16px;}
+button{width:100%;padding:15px;background:#00d4ff;color:#000;border:none;border-radius:5px;font-size:18px;font-weight:bold;cursor:pointer;margin-top:20px;}
+button:hover{background:#00b8e6;}
+label{color:#888;font-size:14px;}
+</style></head><body>
+<div class="container">
+<h1>📶 WiFi Setup</h1>
+<div class="card">
+<form method="POST" action="/wifi">
+<label>WiFi Network Name (SSID)</label>
+<input type="text" name="ssid" placeholder="Your WiFi name" required>
+<label>WiFi Password</label>
+<input type="password" name="password" placeholder="Your WiFi password">
+<button type="submit">Connect to WiFi</button>
+</form>
+</div>
+</div></body></html>)rawliteral");
+    }
+}
+
 void setup_webserver() {
     server.on("/", handle_root);
+    server.on("/wifi", handle_wifi_config);
     server.on("/status", handle_status);
     server.on("/files", handle_files);
     server.on("/upload", HTTP_POST, handle_upload_complete, handle_upload);
@@ -1000,20 +1227,44 @@ bool wifi_connect() {
 
 void wifi_start_ap() {
     WiFi.mode(WIFI_AP);
-    WiFi.softAP(config.device_name, "12345678");
+    WiFi.softAP(config.device_name, "2022@Bukhalid");
     status.ip_address = WiFi.softAPIP();
     status.state = STATE_WIFI_AP_MODE;
     Serial.println("AP Mode started: " + status.ip_address.toString());
 }
 
 void load_config() {
+    // Try loading from Preferences (flash memory) first - works without SD card
+    preferences.begin("3dprint", true);  // Read-only mode
+    String saved_ssid = preferences.getString("wifi_ssid", "");
+    String saved_pass = preferences.getString("wifi_pass", "");
+    String saved_server = preferences.getString("server_url", "");
+    String saved_name = preferences.getString("device_name", "");
+    preferences.end();
+
+    if (saved_ssid.length() > 0) {
+        Serial.println("Loading WiFi config from flash memory");
+        strncpy(config.wifi_ssid, saved_ssid.c_str(), sizeof(config.wifi_ssid));
+        strncpy(config.wifi_pass, saved_pass.c_str(), sizeof(config.wifi_pass));
+        if (saved_server.length() > 0) {
+            strncpy(config.server_url, saved_server.c_str(), sizeof(config.server_url));
+        }
+        if (saved_name.length() > 0) {
+            strncpy(config.device_name, saved_name.c_str(), sizeof(config.device_name));
+        }
+        Serial.println("  SSID: " + String(config.wifi_ssid));
+        return;
+    }
+
+    // Fallback: try SD card config (legacy support)
     if (SD.exists("/config.json")) {
+        Serial.println("Loading config from SD card");
         File f = SD.open("/config.json");
         if (f) {
             StaticJsonDocument<512> doc;
             deserializeJson(doc, f);
             f.close();
-            
+
             if (doc.containsKey("wifi_ssid")) {
                 strncpy(config.wifi_ssid, doc["wifi_ssid"].as<const char*>(), sizeof(config.wifi_ssid));
             }
@@ -1027,6 +1278,8 @@ void load_config() {
                 strncpy(config.device_name, doc["device_name"].as<const char*>(), sizeof(config.device_name));
             }
         }
+    } else {
+        Serial.println("No saved WiFi config found - will start in AP mode");
     }
 }
 

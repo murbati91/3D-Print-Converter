@@ -17,12 +17,13 @@ import asyncio
 import logging
 import tempfile
 import shutil
+import json
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
 import uuid
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Header
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Header, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -47,10 +48,24 @@ class ConversionRequest(BaseModel):
     extrusion_height: float = 10.0
     scale_factor: float = 1.0
     generate_gcode: bool = False
+
+    # Model Processing Settings
+    center_model: bool = True
+    repair_mesh: bool = True
+    simplify_mesh: bool = False
+    simplify_ratio: float = 0.5
+
     # Slicer settings
     layer_height: float = 0.2
+    nozzle_diameter: float = 0.4
+    print_speed: float = 50.0
     infill_percentage: int = 20
     support_enabled: bool = False
+
+    # Bed Settings
+    bed_size_x: float = 220.0
+    bed_size_y: float = 220.0
+    bed_size_z: float = 250.0
 
 
 class ConversionStatus(BaseModel):
@@ -107,13 +122,23 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS for ESP32 and web clients
+# CORS configuration for ESP32 and web clients
+# SECURITY NOTE: This configuration is for DEVELOPMENT ONLY
+# In production, use environment variables to set specific allowed origins
+# Example: allow_origins=os.getenv("ALLOWED_ORIGINS", "").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:8000",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Accept", "Origin", "X-Filename"],
 )
 
 
@@ -152,35 +177,47 @@ async def convert_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     x_filename: Optional[str] = Header(None),
-    output_format: str = "gcode",
-    extrusion_height: float = 10.0,
-    scale_factor: float = 1.0,
+    settings_json: str = Form("{}"),
 ):
     """
     Convert a CAD file to 3D printable format.
-    
+
     Supports streaming response for ESP32 clients.
+
+    Args:
+        file: The CAD file to convert
+        x_filename: Optional filename override (header)
+        settings_json: JSON string containing ConversionRequest settings
     """
-    
+
     # Generate job ID
     job_id = str(uuid.uuid4())[:8]
-    
+
     # Determine filename
     filename = x_filename or file.filename or f"upload_{job_id}"
-    
+
     # Save uploaded file
     input_path = os.path.join(state.work_dir, "uploads", f"{job_id}_{filename}")
-    
+
     try:
         with open(input_path, "wb") as f:
             content = await file.read()
             f.write(content)
-        
+
         logger.info(f"Job {job_id}: Saved file {filename} ({len(content)} bytes)")
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
-    
+
+    # Parse and validate settings from JSON
+    try:
+        settings_dict = json.loads(settings_json) if settings_json else {}
+        request_settings = ConversionRequest(**settings_dict)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON in settings_json: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid settings: {e}")
+
     # Create job status
     status = ConversionStatus(
         job_id=job_id,
@@ -190,16 +227,28 @@ async def convert_file(
         created_at=datetime.now()
     )
     state.jobs[job_id] = status
-    
-    # Configure conversion
+
+    # Configure conversion with ALL settings from request
     settings = ConversionSettings(
-        extrusion_height=extrusion_height,
-        scale_factor=scale_factor,
+        extrusion_height=request_settings.extrusion_height,
+        scale_factor=request_settings.scale_factor,
+        center_model=request_settings.center_model,
+        repair_mesh=request_settings.repair_mesh,
+        simplify_mesh=request_settings.simplify_mesh,
+        simplify_ratio=request_settings.simplify_ratio,
+        layer_height=request_settings.layer_height,
+        nozzle_diameter=request_settings.nozzle_diameter,
+        print_speed=request_settings.print_speed,
+        infill_percentage=request_settings.infill_percentage,
+        support_enabled=request_settings.support_enabled,
+        bed_size_x=request_settings.bed_size_x,
+        bed_size_y=request_settings.bed_size_y,
+        bed_size_z=request_settings.bed_size_z,
     )
-    
+
     # Determine output format
     try:
-        out_format = OutputFormat(output_format.lower())
+        out_format = OutputFormat(request_settings.output_format.lower())
     except ValueError:
         out_format = OutputFormat.GCODE
     

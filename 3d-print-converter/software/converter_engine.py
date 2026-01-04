@@ -26,11 +26,11 @@ import hashlib
 # Third-party imports
 import numpy as np
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
 import ezdxf
 import trimesh
 
-console = Console()
+# Configure console with safe encoding for Windows
+console = Console(legacy_windows=False, force_terminal=False)
 logger = logging.getLogger(__name__)
 
 
@@ -116,10 +116,17 @@ class ExternalToolPaths:
         
         # Add common installation paths
         if sys.platform == "win32":
+            import os as _os
+            user_home = _os.path.expanduser("~")
             search_paths.extend([
                 r"C:\Program Files\ODA",
+                r"C:\Program Files\ODA\ODAFileConverter",
+                r"C:\Program Files\ODA\ODAFileConverter 26.10.0",
                 r"C:\Program Files\FreeCAD",
+                r"C:\Program Files\FreeCAD\bin",
+                f"{user_home}\\AppData\\Local\\Programs\\FreeCAD 1.0\\bin",
                 r"C:\Program Files\Inkscape",
+                r"C:\Program Files\Inkscape\bin",
                 r"C:\Program Files\OpenSCAD",
                 r"C:\Program Files\Prusa3D\PrusaSlicer",
             ])
@@ -239,7 +246,7 @@ class CADConverter:
         Returns:
             ConversionResult with status and output file path
         """
-        console.print(f"[bold blue]Starting conversion: {input_file}[/bold blue]")
+        logger.info(f"Starting conversion: {input_file}")
         
         # Validate input
         if not os.path.exists(input_file):
@@ -263,41 +270,30 @@ class CADConverter:
             output_path = os.path.join(self.work_dir, "output", output_name)
         
         try:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console
-            ) as progress:
-                
-                # Step 1: Convert to intermediate format (DXF)
-                task = progress.add_task("Converting to intermediate format...", total=None)
-                dxf_file = self._convert_to_dxf(input_file, file_type)
-                progress.remove_task(task)
-                
-                # Step 2: Process DXF and create 3D geometry
-                task = progress.add_task("Creating 3D geometry...", total=None)
-                mesh = self._dxf_to_mesh(dxf_file)
-                progress.remove_task(task)
-                
-                # Step 3: Process mesh (repair, scale, center)
-                task = progress.add_task("Processing mesh...", total=None)
-                mesh = self._process_mesh(mesh)
-                progress.remove_task(task)
-                
-                # Step 4: Export to desired format
-                task = progress.add_task(f"Exporting to {output_format.value}...", total=None)
-                self._export_mesh(mesh, output_path, output_format)
-                progress.remove_task(task)
-                
-                # Step 5: Generate G-code if requested
-                if output_format == OutputFormat.GCODE:
-                    task = progress.add_task("Generating G-code...", total=None)
-                    stl_path = output_path.replace(".gcode", ".stl")
-                    self._export_mesh(mesh, stl_path, OutputFormat.STL)
-                    self._generate_gcode(stl_path, output_path)
-                    progress.remove_task(task)
+            # Step 1: Convert to intermediate format (DXF)
+            logger.info("Converting to intermediate format...")
+            dxf_file = self._convert_to_dxf(input_file, file_type)
+
+            # Step 2: Process DXF and create 3D geometry
+            logger.info("Creating 3D geometry...")
+            mesh = self._dxf_to_mesh(dxf_file)
+
+            # Step 3: Process mesh (repair, scale, center)
+            logger.info("Processing mesh...")
+            mesh = self._process_mesh(mesh)
+
+            # Step 4: Export to desired format
+            logger.info(f"Exporting to {output_format.value}...")
+            self._export_mesh(mesh, output_path, output_format)
+
+            # Step 5: Generate G-code if requested
+            if output_format == OutputFormat.GCODE:
+                logger.info("Generating G-code...")
+                stl_path = output_path.replace(".gcode", ".stl")
+                self._export_mesh(mesh, stl_path, OutputFormat.STL)
+                self._generate_gcode(stl_path, output_path)
             
-            console.print(f"[bold green]✓ Conversion successful: {output_path}[/bold green]")
+            logger.info(f"Conversion successful: {output_path}")
             
             return ConversionResult(
                 success=True,
@@ -713,34 +709,59 @@ solid.exportStep("{output_path}")
     
     def _generate_gcode(self, stl_path: str, gcode_path: str):
         """Generate G-code from STL using PrusaSlicer."""
-        
+
         if not self.tools.prusaslicer:
             # Fallback to simple G-code generation
+            logger.info("PrusaSlicer not found, using simple G-code generator")
             self._simple_gcode_generator(stl_path, gcode_path)
             return
-        
+
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(gcode_path), exist_ok=True)
+
+        # Build PrusaSlicer command with all slicer settings
+        # Use separate --output argument to handle paths with spaces
         cmd = [
             self.tools.prusaslicer,
             "--export-gcode",
-            f"--output={gcode_path}",
+            "--output", gcode_path,  # Separate argument for proper path handling
             f"--layer-height={self.settings.layer_height}",
             f"--nozzle-diameter={self.settings.nozzle_diameter}",
             f"--fill-density={self.settings.infill_percentage}%",
+            # Print speed settings
+            f"--perimeter-speed={self.settings.print_speed}",
+            f"--infill-speed={self.settings.print_speed}",
+            # Bed dimensions (rectangular bed shape defined by 4 corners)
+            f"--bed-shape=0x0,{self.settings.bed_size_x}x0,{self.settings.bed_size_x}x{self.settings.bed_size_y},0x{self.settings.bed_size_y}",
             stl_path
         ]
-        
+
         if self.settings.support_enabled:
             cmd.append("--support-material")
-        
+
+        logger.info(f"Running PrusaSlicer: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True)
-        
+
+        # Check if PrusaSlicer succeeded AND the file was created
         if result.returncode != 0:
-            logger.warning(f"PrusaSlicer failed: {result.stderr}")
+            logger.warning(f"PrusaSlicer failed (code {result.returncode}): {result.stderr}")
             self._simple_gcode_generator(stl_path, gcode_path)
+        elif not os.path.exists(gcode_path):
+            logger.warning(f"PrusaSlicer returned 0 but G-code file not found at {gcode_path}")
+            logger.warning(f"PrusaSlicer stdout: {result.stdout}")
+            logger.warning(f"PrusaSlicer stderr: {result.stderr}")
+            self._simple_gcode_generator(stl_path, gcode_path)
+        else:
+            logger.info(f"PrusaSlicer successfully created G-code: {gcode_path}")
     
     def _simple_gcode_generator(self, stl_path: str, gcode_path: str):
         """Simple G-code generator for basic shapes."""
-        
+
+        logger.info(f"Using simple G-code generator for {stl_path}")
+
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(gcode_path), exist_ok=True)
+
         mesh = trimesh.load(stl_path)
         bounds = mesh.bounds
         
@@ -813,7 +834,9 @@ solid.exportStep("{output_path}")
         
         with open(gcode_path, 'w') as f:
             f.write('\n'.join(gcode_lines))
-    
+
+        logger.info(f"Simple G-code generator created: {gcode_path} ({num_layers} layers)")
+
     def _arc_to_points(self, arc, num_points: int) -> List[Tuple[float, float]]:
         """Convert arc segment to points."""
         points = []
