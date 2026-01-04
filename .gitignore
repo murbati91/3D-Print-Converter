@@ -1,36 +1,15 @@
-# Claude/AI config
+# Claude/AI
 .claude/
 .auto-claude/
 .claude_settings.json
 .worktrees/
 
-# PlatformIO build
+# PlatformIO
 .pio/
-.pioenvs/
-.piolibdeps/
 
 # Python
 __pycache__/
 *.pyc
-*.pyo
-.venv/
-venv/
-*.egg-info/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
 
 # OS
-.DS_Store
 Thumbs.db
-
-# Test data (optional - remove if you want to include)
-# test_data/
-
-# Temporary files
-*.tmp
-*.temp
-*.log
